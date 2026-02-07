@@ -9,16 +9,41 @@ An MCP (Model Context Protocol) server that provides read-only access to:
 
 ## Prerequisites
 
-- Node.js 18+
+- [Node.js](https://nodejs.org/) 18 or later
+- [Git](https://git-scm.com/)
 - A Microsoft Entra app registration (or use the built-in default client ID)
 - A [weatherapi.com](https://www.weatherapi.com/) API key (free tier available)
 
-## Setup
+## Getting Started
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/bscarberry/everydaymcp.git
+cd everydaymcp
+```
+
+### 2. Install dependencies
 
 ```bash
 npm install
+```
+
+### 3. Build
+
+```bash
 npm run build
 ```
+
+This compiles the TypeScript source in `src/` to JavaScript in the `build/` directory.
+
+### 4. Run
+
+```bash
+npm start
+```
+
+On first run the server will prompt you to sign in to your Microsoft account (via browser or device-code flow).
 
 ## Configuration
 
