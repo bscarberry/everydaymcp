@@ -1,9 +1,6 @@
 import {
-  AccessToken,
   TokenCredential,
   InteractiveBrowserCredential,
-  DeviceCodeCredential,
-  DeviceCodeInfo,
 } from "@azure/identity";
 import { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import jwt from "jsonwebtoken";
@@ -28,16 +25,18 @@ function parseJwtScopes(token: string): string[] {
   }
 }
 
-// Adapts Azure Identity credentials for the Graph SDK
+// Adapts Azure Identity credentials for the Graph SDK.
+// Triggers interactive browser auth lazily on the first call.
 export class TokenCredentialAuthProvider implements AuthenticationProvider {
-  private credential: TokenCredential;
+  private authManager: AuthManager;
 
-  constructor(credential: TokenCredential) {
-    this.credential = credential;
+  constructor(authManager: AuthManager) {
+    this.authManager = authManager;
   }
 
   async getAccessToken(): Promise<string> {
-    const token = await this.credential.getToken("https://graph.microsoft.com/.default");
+    const credential = await this.authManager.ensureAuthenticated();
+    const token = await credential.getToken("https://graph.microsoft.com/.default");
     if (!token) throw new Error("Failed to acquire access token");
     return token.token;
   }
@@ -50,66 +49,59 @@ export interface AuthConfig {
 }
 
 export class AuthManager {
-  private credential: TokenCredential | null = null;
+  private credential: InteractiveBrowserCredential | null = null;
   private config: AuthConfig;
+  private authPromise: Promise<InteractiveBrowserCredential> | null = null;
 
   constructor(config: AuthConfig) {
     this.config = config;
   }
 
-  async initialize(): Promise<void> {
+  // Lazily authenticate on first use. Returns the credential, opening a
+  // browser sign-in window only when actually needed. Subsequent calls
+  // return the already-resolved credential.
+  async ensureAuthenticated(): Promise<InteractiveBrowserCredential> {
+    if (this.credential) return this.credential;
+
+    // Deduplicate concurrent calls so the browser only opens once
+    if (!this.authPromise) {
+      this.authPromise = this.authenticate();
+    }
+    return this.authPromise;
+  }
+
+  private async authenticate(): Promise<InteractiveBrowserCredential> {
     const { tenantId, clientId } = this.config;
     const redirectUri = this.config.redirectUri || DefaultRedirectUri;
 
-    logger.info(`Initializing interactive authentication (tenant: ${tenantId}, client: ${clientId})`);
+    logger.info(`Opening browser for interactive authentication (tenant: ${tenantId}, client: ${clientId})`);
 
-    try {
-      this.credential = new InteractiveBrowserCredential({
-        tenantId,
-        clientId,
-        redirectUri,
-      });
+    const cred = new InteractiveBrowserCredential({
+      tenantId,
+      clientId,
+      redirectUri,
+    });
 
-      // Test credential by acquiring a token
-      const token = await this.credential.getToken("https://graph.microsoft.com/.default");
-      if (!token) throw new Error("Failed to acquire token");
-      logger.info("Interactive browser authentication successful");
-    } catch (error) {
-      logger.info("Interactive browser failed, falling back to device code flow");
-      this.credential = new DeviceCodeCredential({
-        tenantId,
-        clientId,
-        userPromptCallback: (info: DeviceCodeInfo) => {
-          console.error(`\nAuthentication Required:`);
-          console.error(`Visit: ${info.verificationUri}`);
-          console.error(`Enter code: ${info.userCode}\n`);
-          return Promise.resolve();
-        },
-      });
+    // Acquire an initial token to force the browser prompt now
+    const token = await cred.getToken("https://graph.microsoft.com/.default");
+    if (!token) throw new Error("Failed to acquire token via interactive browser sign-in");
 
-      const token = await this.credential.getToken("https://graph.microsoft.com/.default");
-      if (!token) throw new Error("Failed to acquire token via device code");
-      logger.info("Device code authentication successful");
-    }
+    logger.info("Interactive browser authentication successful");
+    this.credential = cred;
+    return cred;
   }
 
   getGraphAuthProvider(): TokenCredentialAuthProvider {
-    if (!this.credential) throw new Error("Authentication not initialized");
-    return new TokenCredentialAuthProvider(this.credential);
+    return new TokenCredentialAuthProvider(this);
   }
 
-  getCredential(): TokenCredential {
-    if (!this.credential) throw new Error("Authentication not initialized");
-    return this.credential;
-  }
-
-  async getTokenStatus(): Promise<{ isExpired: boolean; expiresOn?: Date; scopes?: string[] }> {
-    if (!this.credential) return { isExpired: true };
+  async getTokenStatus(): Promise<{ isAuthenticated: boolean; expiresOn?: Date; scopes?: string[] }> {
+    if (!this.credential) return { isAuthenticated: false };
     try {
       const token = await this.credential.getToken("https://graph.microsoft.com/.default");
       if (token) {
         return {
-          isExpired: false,
+          isAuthenticated: true,
           expiresOn: new Date(token.expiresOnTimestamp),
           scopes: parseJwtScopes(token.token),
         };
@@ -117,7 +109,7 @@ export class AuthManager {
     } catch (error) {
       logger.error("Error getting token status", error);
     }
-    return { isExpired: true };
+    return { isAuthenticated: false };
   }
 
   async addPermissions(scopes: string[]): Promise<void> {
@@ -126,26 +118,9 @@ export class AuthManager {
     const scopeString = scopes.map((s) => `https://graph.microsoft.com/${s}`).join(" ");
 
     logger.info(`Requesting additional permissions: ${scopeString}`);
-    console.error(`\nRequesting Additional Graph Permissions: ${scopes.join(", ")}`);
 
-    try {
-      this.credential = new InteractiveBrowserCredential({ tenantId, clientId, redirectUri });
-      await this.credential.getToken(scopeString);
-    } catch {
-      logger.info("Interactive browser failed, falling back to device code for permission request");
-      this.credential = new DeviceCodeCredential({
-        tenantId,
-        clientId,
-        userPromptCallback: (info: DeviceCodeInfo) => {
-          console.error(`\nAdditional Permissions Required:`);
-          console.error(`Visit: ${info.verificationUri}`);
-          console.error(`Enter code: ${info.userCode}`);
-          console.error(`Scopes: ${scopes.join(", ")}\n`);
-          return Promise.resolve();
-        },
-      });
-      await this.credential.getToken(scopeString);
-    }
+    this.credential = new InteractiveBrowserCredential({ tenantId, clientId, redirectUri });
+    await this.credential.getToken(scopeString);
     logger.info("Additional permissions granted");
   }
 }
