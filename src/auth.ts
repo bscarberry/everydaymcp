@@ -8,7 +8,7 @@ import {
 import { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import jwt from "jsonwebtoken";
 import { logger } from "./logger.js";
-import { DefaultClientId, DefaultTenantId, DefaultRedirectUri } from "./constants.js";
+import { DefaultRedirectUri } from "./constants.js";
 
 // Helper: decode JWT and extract scopes
 function parseJwtScopes(token: string): string[] {
@@ -44,8 +44,8 @@ export class TokenCredentialAuthProvider implements AuthenticationProvider {
 }
 
 export interface AuthConfig {
-  tenantId?: string;
-  clientId?: string;
+  tenantId: string;
+  clientId: string;
   redirectUri?: string;
 }
 
@@ -58,8 +58,7 @@ export class AuthManager {
   }
 
   async initialize(): Promise<void> {
-    const tenantId = this.config.tenantId || DefaultTenantId;
-    const clientId = this.config.clientId || DefaultClientId;
+    const { tenantId, clientId } = this.config;
     const redirectUri = this.config.redirectUri || DefaultRedirectUri;
 
     logger.info(`Initializing interactive authentication (tenant: ${tenantId}, client: ${clientId})`);
@@ -122,8 +121,7 @@ export class AuthManager {
   }
 
   async addPermissions(scopes: string[]): Promise<void> {
-    const tenantId = this.config.tenantId || DefaultTenantId;
-    const clientId = this.config.clientId || DefaultClientId;
+    const { tenantId, clientId } = this.config;
     const redirectUri = this.config.redirectUri || DefaultRedirectUri;
     const scopeString = scopes.map((s) => `https://graph.microsoft.com/${s}`).join(" ");
 

@@ -1,9 +1,7 @@
 // Shared constants for the EverydayMCP Server
 
-// Default Azure AD app registration client ID for interactive auth
-// Users should register their own app and override via CLIENT_ID env var
-export const DefaultClientId = "a9bac4c3-af0d-4292-9453-9da89e390140";
-export const DefaultTenantId = "common";
+// No default client ID — users must register their own Entra app and
+// provide CLIENT_ID and TENANT_ID via environment variables.
 export const DefaultRedirectUri = "http://localhost:3000";
 
 // Graph API version based on USE_GRAPH_BETA environment variable

@@ -33,10 +33,28 @@ registerWeatherTools(server);
 
 // Startup ─────────────────────────────────────────────────────────────
 async function main() {
+  // Validate required environment variables
+  const tenantId = process.env.TENANT_ID;
+  const clientId = process.env.CLIENT_ID;
+
+  if (!tenantId || !clientId) {
+    const missing = [
+      !tenantId && "TENANT_ID",
+      !clientId && "CLIENT_ID",
+    ].filter(Boolean).join(", ");
+    const msg =
+      `Missing required environment variable(s): ${missing}\n` +
+      `Set these in your MCP client config or shell environment.\n` +
+      `See README.md for instructions on creating an Entra app registration.`;
+    console.error(msg);
+    logger.error(msg);
+    process.exit(1);
+  }
+
   // Initialize Graph authentication (interactive / device-code)
   const authConfig: AuthConfig = {
-    tenantId: process.env.TENANT_ID,
-    clientId: process.env.CLIENT_ID,
+    tenantId,
+    clientId,
     redirectUri: process.env.REDIRECT_URI,
   };
 

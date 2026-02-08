@@ -11,25 +11,51 @@ An MCP (Model Context Protocol) server that provides read-only access to:
 
 - [Node.js](https://nodejs.org/) 18 or later
 - [Git](https://git-scm.com/)
-- A Microsoft Entra app registration (or use the built-in default client ID)
+- A Microsoft Entra (Azure AD) tenant with an app registration (see step 1 below)
 - A [weatherapi.com](https://www.weatherapi.com/) API key (free tier available)
 
 ## Getting Started
 
-### 1. Clone the repository
+### 1. Create an Entra App Registration
+
+The server authenticates to Microsoft Graph as **your user account** via MSAL interactive sign-in. You need an app registration in your own Entra tenant to enable this.
+
+1. Sign in to the [Microsoft Entra admin center](https://entra.microsoft.com/)
+2. Navigate to **Identity** > **Applications** > **App registrations** > **New registration**
+3. Fill in the registration form:
+   - **Name**: `EverydayMCP` (or any name you prefer)
+   - **Supported account types**: *Accounts in this organizational directory only* (single tenant)
+   - **Redirect URI**: Select **Single-page application (SPA)** and enter `http://localhost:3000`
+4. Click **Register**
+5. On the app's **Overview** page, copy these two values — you will need them later:
+   - **Application (client) ID** → this is your `CLIENT_ID`
+   - **Directory (tenant) ID** → this is your `TENANT_ID`
+6. Go to **API permissions** > **Add a permission** > **Microsoft Graph** > **Delegated permissions** and add the permissions you need:
+
+   | Service | Permissions |
+   |---|---|
+   | Entra ID | `User.Read`, `User.Read.All`, `Group.Read.All`, `Directory.Read.All`, `Policy.Read.All` |
+   | Defender | `SecurityEvents.Read.All`, `SecurityIncident.Read.All`, `ThreatHunting.Read.All` |
+   | Intune | `DeviceManagementManagedDevices.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementApps.Read.All` |
+
+   > **Tip**: Start with `User.Read` to verify auth works, then add more as needed. You can also use the `add-graph-permission` tool at runtime to request additional scopes.
+
+7. If your organization requires it, click **Grant admin consent** for the permissions above
+
+### 2. Clone the repository
 
 ```bash
 git clone https://github.com/bscarberry/everydaymcp.git
 cd everydaymcp
 ```
 
-### 2. Install dependencies
+### 3. Install dependencies
 
 ```bash
 npm install
 ```
 
-### 3. Build
+### 4. Build
 
 ```bash
 npm run build
@@ -37,13 +63,15 @@ npm run build
 
 This compiles the TypeScript source in `src/` to JavaScript in the `build/` directory.
 
-### 4. Run
+### 5. Run
+
+You can test the server directly by providing your credentials as environment variables:
 
 ```bash
-npm start
+TENANT_ID="your-tenant-id" CLIENT_ID="your-client-id" npm start
 ```
 
-On first run the server will prompt you to sign in to your Microsoft account (via browser or device-code flow).
+On first run the server will open a browser window (or display a device code) for you to sign in with your Microsoft account.
 
 ## Configuration
 
@@ -51,10 +79,10 @@ On first run the server will prompt you to sign in to your Microsoft account (vi
 
 | Variable | Required | Description |
 |---|---|---|
-| `TENANT_ID` | No | Azure AD tenant ID (defaults to `common`) |
-| `CLIENT_ID` | No | App registration client ID (has a built-in default) |
+| `TENANT_ID` | **Yes** | Your Entra directory (tenant) ID — from step 1.5 above |
+| `CLIENT_ID` | **Yes** | Your Entra app registration (client) ID — from step 1.5 above |
 | `REDIRECT_URI` | No | OAuth redirect URI (defaults to `http://localhost:3000`) |
-| `WEATHER_API_KEY` | Yes* | weatherapi.com API key (*required for weather tools) |
+| `WEATHER_API_KEY` | Yes* | weatherapi.com API key (*only required for weather tools) |
 | `USE_GRAPH_BETA` | No | Set to `false` to use Graph v1.0 instead of beta |
 
 ### Authentication
@@ -64,25 +92,16 @@ The server uses **interactive user authentication** (MSAL). On startup it will:
 1. Attempt to open a browser for interactive sign-in
 2. Fall back to device-code flow if a browser is unavailable
 
-Your user account's permissions determine what Graph data is accessible.
-
-### Azure AD App Registration
-
-To use your own app registration:
-
-1. Go to [Entra admin center](https://entra.microsoft.com/) > App registrations > New registration
-2. Set redirect URI to `http://localhost:3000` (Single-page application)
-3. Under API permissions, add Microsoft Graph delegated permissions as needed:
-   - `User.Read.All`, `Group.Read.All` (Entra)
-   - `SecurityEvents.Read.All` (Defender)
-   - `DeviceManagementManagedDevices.Read.All` (Intune)
-4. Set `CLIENT_ID` to your app's Application (client) ID
+Your user account's permissions determine what Graph data is accessible. The server will exit with an error if `TENANT_ID` or `CLIENT_ID` are not set.
 
 ## MCP Client Configuration
 
 ### Claude Desktop
 
-Add to your `claude_desktop_config.json`:
+Add the following to your `claude_desktop_config.json`:
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -91,14 +110,16 @@ Add to your `claude_desktop_config.json`:
       "command": "node",
       "args": ["/absolute/path/to/everydaymcp/build/main.js"],
       "env": {
-        "WEATHER_API_KEY": "your-weatherapi-key",
-        "TENANT_ID": "your-tenant-id",
-        "CLIENT_ID": "your-client-id"
+        "TENANT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "CLIENT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "WEATHER_API_KEY": "your-weatherapi-key"
       }
     }
   }
 }
 ```
+
+Replace the `TENANT_ID` and `CLIENT_ID` values with the IDs you copied from your Entra app registration in step 1.
 
 ## Available Tools
 
