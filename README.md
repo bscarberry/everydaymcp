@@ -38,7 +38,7 @@ The server authenticates to Microsoft Graph as **your user account** via MSAL in
    | Defender | `SecurityEvents.Read.All`, `SecurityIncident.Read.All`, `ThreatHunting.Read.All` |
    | Intune | `DeviceManagementManagedDevices.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementApps.Read.All` |
 
-   > **Tip**: Start with `User.Read` to verify auth works, then add more as needed. You can also use the `add-graph-permission` tool at runtime to request additional scopes.
+   > **Tip**: Start with `User.Read` to verify auth works, then add more permissions as needed. If you add new permissions later, re-run `npm run login` to pick them up.
 
 7. If your organization requires it, click **Grant admin consent** for the permissions above
 
@@ -63,15 +63,27 @@ npm run build
 
 This compiles the TypeScript source in `src/` to JavaScript in the `build/` directory.
 
-### 5. Run
+### 5. Log in (one-time)
 
-You can test the server directly by providing your credentials as environment variables:
+Before the MCP server can use Graph APIs, you must sign in once from your terminal. This opens a browser window, authenticates you, and caches the token locally so the MCP server can use it silently.
 
-```bash
-TENANT_ID="your-tenant-id" CLIENT_ID="your-client-id" npm start
+**Windows (PowerShell):**
+
+```powershell
+$env:TENANT_ID="your-tenant-id"; $env:CLIENT_ID="your-client-id"; npm run login
 ```
 
-The server starts immediately. Authentication happens lazily — a browser window will open for interactive sign-in only when you make your first Graph API tool call.
+**macOS / Linux:**
+
+```bash
+TENANT_ID="your-tenant-id" CLIENT_ID="your-client-id" npm run login
+```
+
+A browser window will open for Microsoft sign-in. After you authenticate, the token is cached to `~/.everydaymcp/auth-record.json` and the OS credential store. You only need to do this once (or again if your token expires or you change permissions).
+
+### 6. Configure your MCP client
+
+See the [MCP Client Configuration](#mcp-client-configuration) section below.
 
 ## Configuration
 
@@ -87,9 +99,14 @@ The server starts immediately. Authentication happens lazily — a browser windo
 
 ### Authentication
 
-The server uses **interactive browser authentication** (MSAL). Authentication is **lazy** — the server starts up immediately and only opens a browser sign-in window when you make your first Graph API tool call. Your user account's permissions determine what Graph data is accessible.
+The server uses a **two-step authentication** approach:
 
-The server will exit with an error at startup if `TENANT_ID` or `CLIENT_ID` are not set.
+1. **`npm run login`** — Run once in your terminal. Opens a browser for interactive Microsoft sign-in, then caches the token to disk and the OS credential store.
+2. **MCP server** — On startup, loads the cached credential and acquires tokens **silently** (no browser, no prompts). The server never opens a browser or asks for a device code.
+
+Your user account's permissions determine what Graph data is accessible. The server will exit with an error at startup if `TENANT_ID` or `CLIENT_ID` are not set.
+
+> **Re-authentication**: If your cached token expires or you add new permissions to the app registration, simply re-run `npm run login`.
 
 ## MCP Client Configuration
 
@@ -150,7 +167,6 @@ Replace the `TENANT_ID` and `CLIENT_ID` values with the IDs you copied from your
 | `defender-query` | Query Defender — alerts, incidents, secure scores, threat intel |
 | `intune-query` | Query Intune — managed devices, compliance, configs, apps |
 | `get-auth-status` | Check auth status, token expiry, and granted scopes |
-| `add-graph-permission` | Request additional Graph permission scopes |
 
 ### Weather
 
@@ -160,6 +176,20 @@ Replace the `TENANT_ID` and `CLIENT_ID` values with the IDs you copied from your
 | `weather-forecast` | Weather forecast (up to 10 days) |
 | `weather-search` | Search / autocomplete locations |
 | `weather-astronomy` | Sunrise, sunset, moon phase data |
+
+## Troubleshooting
+
+### "No cached login found" error
+Run `npm run login` in your terminal first, then restart the MCP server.
+
+### Token expired
+Re-run `npm run login` to refresh the cached token.
+
+### Permission denied errors from Graph API
+Add the required permissions to your app registration in Entra (step 1.6), grant admin consent if needed, then re-run `npm run login`.
+
+### Server log location
+The server writes logs to `build/mcp-server.log` in the project directory.
 
 ## Example Queries
 

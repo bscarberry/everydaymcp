@@ -1,18 +1,30 @@
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 import {
-  TokenCredential,
   InteractiveBrowserCredential,
+  AuthenticationRecord,
+  useIdentityPlugin,
 } from "@azure/identity";
+import { cachePersistencePlugin } from "@azure/identity-cache-persistence";
 import { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import jwt from "jsonwebtoken";
 import { logger } from "./logger.js";
 import { DefaultRedirectUri } from "./constants.js";
 
-// Helper: decode JWT and extract scopes
+// Enable persistent token cache (OS keychain / encrypted file)
+useIdentityPlugin(cachePersistencePlugin);
+
+// Where the login CLI saves the authentication record
+export const AUTH_DIR = join(homedir(), ".everydaymcp");
+export const AUTH_RECORD_PATH = join(AUTH_DIR, "auth-record.json");
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
 function parseJwtScopes(token: string): string[] {
   try {
     const decoded = jwt.decode(token) as any;
     if (!decoded || typeof decoded !== "object") return [];
-
     if (typeof decoded.scp === "string") {
       return decoded.scp.split(" ").filter((s: string) => s.length > 0);
     }
@@ -25,8 +37,8 @@ function parseJwtScopes(token: string): string[] {
   }
 }
 
-// Adapts Azure Identity credentials for the Graph SDK.
-// Triggers interactive browser auth lazily on the first call.
+// ── Auth provider for the Graph SDK ──────────────────────────────────
+
 export class TokenCredentialAuthProvider implements AuthenticationProvider {
   private authManager: AuthManager;
 
@@ -35,12 +47,14 @@ export class TokenCredentialAuthProvider implements AuthenticationProvider {
   }
 
   async getAccessToken(): Promise<string> {
-    const credential = await this.authManager.ensureAuthenticated();
+    const credential = this.authManager.getCredential();
     const token = await credential.getToken("https://graph.microsoft.com/.default");
     if (!token) throw new Error("Failed to acquire access token");
     return token.token;
   }
 }
+
+// ── Auth config & manager ────────────────────────────────────────────
 
 export interface AuthConfig {
   tenantId: string;
@@ -49,56 +63,72 @@ export interface AuthConfig {
 }
 
 export class AuthManager {
-  private credential: InteractiveBrowserCredential | null = null;
+  private credential: InteractiveBrowserCredential;
   private config: AuthConfig;
-  private authPromise: Promise<InteractiveBrowserCredential> | null = null;
+  private isReady: boolean;
 
   constructor(config: AuthConfig) {
     this.config = config;
-  }
 
-  // Lazily authenticate on first use. Returns the credential, opening a
-  // browser sign-in window only when actually needed. Subsequent calls
-  // return the already-resolved credential.
-  async ensureAuthenticated(): Promise<InteractiveBrowserCredential> {
-    if (this.credential) return this.credential;
-
-    // Deduplicate concurrent calls so the browser only opens once
-    if (!this.authPromise) {
-      this.authPromise = this.authenticate();
+    // Try to load the saved authentication record from disk
+    let authRecord: AuthenticationRecord | undefined;
+    if (existsSync(AUTH_RECORD_PATH)) {
+      try {
+        const raw = readFileSync(AUTH_RECORD_PATH, "utf-8");
+        authRecord = JSON.parse(raw) as AuthenticationRecord;
+        logger.info("Loaded cached authentication record");
+      } catch (err) {
+        logger.error("Failed to read auth record, will require fresh login", err);
+      }
     }
-    return this.authPromise;
+
+    if (!authRecord) {
+      logger.error(
+        "No authentication record found. Run 'npm run login' to sign in first.",
+      );
+    }
+
+    this.isReady = !!authRecord;
+
+    // Create credential with the cached record + persistent token cache.
+    // With both in place, token acquisition is silent (no browser).
+    this.credential = new InteractiveBrowserCredential({
+      tenantId: config.tenantId,
+      clientId: config.clientId,
+      redirectUri: config.redirectUri || DefaultRedirectUri,
+      tokenCachePersistenceOptions: { enabled: true, name: "everydaymcp" },
+      ...(authRecord ? { authenticationRecord: authRecord } : {}),
+    });
   }
 
-  private async authenticate(): Promise<InteractiveBrowserCredential> {
-    const { tenantId, clientId } = this.config;
-    const redirectUri = this.config.redirectUri || DefaultRedirectUri;
-
-    logger.info(`Opening browser for interactive authentication (tenant: ${tenantId}, client: ${clientId})`);
-
-    const cred = new InteractiveBrowserCredential({
-      tenantId,
-      clientId,
-      redirectUri,
-    });
-
-    // Acquire an initial token to force the browser prompt now
-    const token = await cred.getToken("https://graph.microsoft.com/.default");
-    if (!token) throw new Error("Failed to acquire token via interactive browser sign-in");
-
-    logger.info("Interactive browser authentication successful");
-    this.credential = cred;
-    return cred;
+  getCredential(): InteractiveBrowserCredential {
+    if (!this.isReady) {
+      throw new Error(
+        "Not authenticated. Run 'npm run login' in your terminal first, " +
+        "then restart the MCP server.",
+      );
+    }
+    return this.credential;
   }
 
   getGraphAuthProvider(): TokenCredentialAuthProvider {
     return new TokenCredentialAuthProvider(this);
   }
 
-  async getTokenStatus(): Promise<{ isAuthenticated: boolean; expiresOn?: Date; scopes?: string[] }> {
-    if (!this.credential) return { isAuthenticated: false };
+  hasAuthRecord(): boolean {
+    return this.isReady;
+  }
+
+  async getTokenStatus(): Promise<{
+    isAuthenticated: boolean;
+    expiresOn?: Date;
+    scopes?: string[];
+  }> {
+    if (!this.isReady) return { isAuthenticated: false };
     try {
-      const token = await this.credential.getToken("https://graph.microsoft.com/.default");
+      const token = await this.credential.getToken(
+        "https://graph.microsoft.com/.default",
+      );
       if (token) {
         return {
           isAuthenticated: true,
@@ -110,17 +140,5 @@ export class AuthManager {
       logger.error("Error getting token status", error);
     }
     return { isAuthenticated: false };
-  }
-
-  async addPermissions(scopes: string[]): Promise<void> {
-    const { tenantId, clientId } = this.config;
-    const redirectUri = this.config.redirectUri || DefaultRedirectUri;
-    const scopeString = scopes.map((s) => `https://graph.microsoft.com/${s}`).join(" ");
-
-    logger.info(`Requesting additional permissions: ${scopeString}`);
-
-    this.credential = new InteractiveBrowserCredential({ tenantId, clientId, redirectUri });
-    await this.credential.getToken(scopeString);
-    logger.info("Additional permissions granted");
   }
 }

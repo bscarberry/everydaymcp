@@ -76,35 +76,9 @@ export function registerGraphTools(server: McpServer, getGraphClient: () => Clie
     },
   );
 
-  // ── Add permissions ────────────────────────────────────────────────
-  server.tool(
-    "add-graph-permission",
-    "Request additional Microsoft Graph permission scopes via a fresh interactive sign-in. Use when a query returns a permissions error.",
-    {
-      scopes: z.array(z.string()).describe("Permission scopes to request (e.g. ['User.Read.All', 'SecurityEvents.Read.All', 'DeviceManagementManagedDevices.Read.All'])"),
-    },
-    async ({ scopes }) => {
-      const authManager = getAuthManager();
-      if (!authManager) {
-        return { content: [{ type: "text" as const, text: "Auth manager not initialized" }], isError: true };
-      }
-      if (!scopes.length) {
-        return { content: [{ type: "text" as const, text: "At least one scope is required" }], isError: true };
-      }
-      try {
-        await authManager.addPermissions(scopes);
-        const tokenStatus = await authManager.getTokenStatus();
-        return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({ message: "Permissions granted successfully", requestedScopes: scopes, tokenStatus }, null, 2),
-          }],
-        };
-      } catch (error: any) {
-        return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
-      }
-    },
-  );
+  // ── Auth status ── (continued)
+  // The add-graph-permission tool was removed. To change permissions,
+  // update the app registration in Entra and re-run: npm run login
 }
 
 // ── Shared GET executor ────────────────────────────────────────────────
