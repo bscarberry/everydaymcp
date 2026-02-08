@@ -71,7 +71,7 @@ You can test the server directly by providing your credentials as environment va
 TENANT_ID="your-tenant-id" CLIENT_ID="your-client-id" npm start
 ```
 
-On first run the server will open a browser window (or display a device code) for you to sign in with your Microsoft account.
+The server starts immediately. Authentication happens lazily — a browser window will open for interactive sign-in only when you make your first Graph API tool call.
 
 ## Configuration
 
@@ -87,12 +87,9 @@ On first run the server will open a browser window (or display a device code) fo
 
 ### Authentication
 
-The server uses **interactive user authentication** (MSAL). On startup it will:
+The server uses **interactive browser authentication** (MSAL). Authentication is **lazy** — the server starts up immediately and only opens a browser sign-in window when you make your first Graph API tool call. Your user account's permissions determine what Graph data is accessible.
 
-1. Attempt to open a browser for interactive sign-in
-2. Fall back to device-code flow if a browser is unavailable
-
-Your user account's permissions determine what Graph data is accessible. The server will exit with an error if `TENANT_ID` or `CLIENT_ID` are not set.
+The server will exit with an error at startup if `TENANT_ID` or `CLIENT_ID` are not set.
 
 ## MCP Client Configuration
 
@@ -103,12 +100,14 @@ Add the following to your `claude_desktop_config.json`:
 **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
+**Windows example:**
+
 ```json
 {
   "mcpServers": {
     "everydaymcp": {
       "command": "node",
-      "args": ["/absolute/path/to/everydaymcp/build/main.js"],
+      "args": ["C:/Users/YourName/everydaymcp/build/main.js"],
       "env": {
         "TENANT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "CLIENT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -118,6 +117,26 @@ Add the following to your `claude_desktop_config.json`:
   }
 }
 ```
+
+**macOS example:**
+
+```json
+{
+  "mcpServers": {
+    "everydaymcp": {
+      "command": "node",
+      "args": ["/Users/YourName/everydaymcp/build/main.js"],
+      "env": {
+        "TENANT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "CLIENT_ID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "WEATHER_API_KEY": "your-weatherapi-key"
+      }
+    }
+  }
+}
+```
+
+> **Important:** The path must point to `build/main.js` (not `main.js`). Use forward slashes in the path even on Windows — Node.js handles them correctly.
 
 Replace the `TENANT_ID` and `CLIENT_ID` values with the IDs you copied from your Entra app registration in step 1.
 
