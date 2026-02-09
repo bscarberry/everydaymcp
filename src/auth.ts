@@ -1,44 +1,41 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
 import {
-  PublicClientApplication,
-  Configuration,
-  AccountInfo,
-  SilentFlowRequest,
-} from "@azure/msal-node";
+  InteractiveBrowserCredential,
+  DeviceCodeCredential,
+  ClientSecretCredential,
+  TokenCredential,
+  DeviceCodeInfo,
+} from "@azure/identity";
 import { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import { logger } from "./logger.js";
-import { GRAPH_SCOPES } from "./constants.js";
+import {
+  DefaultClientId,
+  DefaultTenantId,
+  DefaultRedirectUri,
+  GRAPH_SCOPES,
+} from "./constants.js";
 
-// ── Cache paths ──────────────────────────────────────────────────────
+// ── Auth modes ───────────────────────────────────────────────────────
 
-export const AUTH_DIR = join(homedir(), ".everydaymcp");
-export const CACHE_PATH = join(AUTH_DIR, "msal-cache.json");
+export enum AuthMode {
+  Interactive = "interactive",
+  DeviceCode = "devicecode",
+  ClientCredentials = "clientcredentials",
+}
 
-// ── MSAL cache plugin (file-based persistence) ──────────────────────
+// ── Graph SDK auth provider wrapping any TokenCredential ─────────────
 
-/**
- * Creates an MSAL cache plugin that persists the token cache to disk.
- * Shared between the login CLI and the MCP server so both operate on
- * the same cache file at ~/.everydaymcp/msal-cache.json.
- */
-export function createCachePlugin() {
-  return {
-    beforeCacheAccess: async (context: { tokenCache: { deserialize(cache: string): void } }) => {
-      if (existsSync(CACHE_PATH)) {
-        context.tokenCache.deserialize(readFileSync(CACHE_PATH, "utf-8"));
-      }
-    },
-    afterCacheAccess: async (context: { tokenCache: { serialize(): string }; cacheHasChanged: boolean }) => {
-      if (context.cacheHasChanged) {
-        if (!existsSync(AUTH_DIR)) {
-          mkdirSync(AUTH_DIR, { recursive: true });
-        }
-        writeFileSync(CACHE_PATH, context.tokenCache.serialize());
-      }
-    },
-  };
+class TokenCredentialAuthProvider implements AuthenticationProvider {
+  private credential: TokenCredential;
+
+  constructor(credential: TokenCredential) {
+    this.credential = credential;
+  }
+
+  async getAccessToken(): Promise<string> {
+    const token = await this.credential.getToken(GRAPH_SCOPES);
+    if (!token) throw new Error("Failed to acquire access token");
+    return token.token;
+  }
 }
 
 // ── JWT scope extraction (no external dependency) ────────────────────
@@ -48,7 +45,9 @@ function parseJwtScopes(token: string): string[] {
     const parts = token.split(".");
     if (parts.length !== 3) return [];
     const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = JSON.parse(Buffer.from(payload, "base64").toString("utf-8"));
+    const decoded = JSON.parse(
+      Buffer.from(payload, "base64").toString("utf-8"),
+    );
     if (typeof decoded.scp === "string") {
       return decoded.scp.split(" ").filter((s: string) => s.length > 0);
     }
@@ -61,115 +60,134 @@ function parseJwtScopes(token: string): string[] {
   }
 }
 
-// ── Auth provider for the Graph SDK ──────────────────────────────────
-
-class MsalAuthProvider implements AuthenticationProvider {
-  private authManager: AuthManager;
-
-  constructor(authManager: AuthManager) {
-    this.authManager = authManager;
-  }
-
-  async getAccessToken(): Promise<string> {
-    const { accessToken } = await this.authManager.acquireToken();
-    return accessToken;
-  }
-}
-
 // ── Auth config ──────────────────────────────────────────────────────
 
 export interface AuthConfig {
-  tenantId: string;
-  clientId: string;
+  tenantId?: string;
+  clientId?: string;
+  clientSecret?: string;
+  redirectUri?: string;
+  authMode: AuthMode;
 }
 
-// ── Auth manager (MSAL-based) ────────────────────────────────────────
+// ── Auth manager ─────────────────────────────────────────────────────
 
 export class AuthManager {
-  private pca: PublicClientApplication;
-  private account: AccountInfo | null = null;
+  private credential!: TokenCredential;
+  private config: AuthConfig;
+  private authMode: AuthMode;
 
   constructor(config: AuthConfig) {
-    const msalConfig: Configuration = {
-      auth: {
-        clientId: config.clientId,
-        authority: `https://login.microsoftonline.com/${config.tenantId}`,
-      },
-      cache: {
-        cachePlugin: createCachePlugin(),
-      },
-    };
-
-    this.pca = new PublicClientApplication(msalConfig);
+    this.config = config;
+    this.authMode = config.authMode;
   }
 
-  /** Load cached accounts from the MSAL token cache. */
+  /**
+   * Initialize the credential and acquire a token to verify auth works.
+   * For interactive mode this opens a browser; for device code it prints
+   * a URL and code to stderr.
+   */
   async initialize(): Promise<void> {
-    const cache = this.pca.getTokenCache();
-    const accounts = await cache.getAllAccounts();
-    if (accounts.length > 0) {
-      this.account = accounts[0];
-      logger.info(`Loaded cached account: ${this.account.username}`);
-    } else {
-      logger.error(
-        "No cached account found. Run 'npm run login' to sign in first.",
-      );
-    }
-  }
+    const tenantId = this.config.tenantId || DefaultTenantId;
+    const clientId = this.config.clientId || DefaultClientId;
+    const redirectUri = this.config.redirectUri || DefaultRedirectUri;
 
-  hasAccount(): boolean {
-    return this.account !== null;
-  }
-
-  /** Silently acquire an access token using the cached account. */
-  async acquireToken(): Promise<{ accessToken: string; expiresOn: Date | null }> {
-    if (!this.account) {
+    if (!clientId) {
       throw new Error(
-        "Not authenticated. Run 'npm run login' in your terminal first, " +
-        "then restart the MCP server.",
+        "CLIENT_ID is required. Set it in your MCP client configuration (env block), " +
+          "or register a default multi-tenant app and set DefaultClientId in src/constants.ts.",
       );
     }
 
-    const request: SilentFlowRequest = {
-      account: this.account,
-      scopes: GRAPH_SCOPES,
-    };
+    switch (this.authMode) {
+      case AuthMode.ClientCredentials: {
+        if (!this.config.clientSecret) {
+          throw new Error(
+            "CLIENT_SECRET is required for client credentials mode.",
+          );
+        }
+        logger.info("Authenticating with client credentials...");
+        this.credential = new ClientSecretCredential(
+          tenantId,
+          clientId,
+          this.config.clientSecret,
+        );
+        break;
+      }
 
-    try {
-      const result = await this.pca.acquireTokenSilent(request);
-      return { accessToken: result.accessToken, expiresOn: result.expiresOn };
-    } catch {
-      throw new Error(
-        "Token acquisition failed. Your cached token may have expired. " +
-        "Re-run 'npm run login'.",
-      );
+      case AuthMode.DeviceCode: {
+        logger.info("Authenticating with device code...");
+        this.credential = new DeviceCodeCredential({
+          tenantId,
+          clientId,
+          userPromptCallback: (info: DeviceCodeInfo) => {
+            console.error(`\nAuthentication required:`);
+            console.error(`  Visit:  ${info.verificationUri}`);
+            console.error(`  Code:   ${info.userCode}\n`);
+          },
+        });
+        break;
+      }
+
+      case AuthMode.Interactive:
+      default: {
+        try {
+          logger.info("Authenticating interactively (browser)...");
+          this.credential = new InteractiveBrowserCredential({
+            tenantId,
+            clientId,
+            redirectUri,
+          });
+        } catch {
+          // Fall back to device code if browser auth isn't available
+          logger.info(
+            "Browser auth unavailable, falling back to device code...",
+          );
+          this.credential = new DeviceCodeCredential({
+            tenantId,
+            clientId,
+            userPromptCallback: (info: DeviceCodeInfo) => {
+              console.error(`\nAuthentication required:`);
+              console.error(`  Visit:  ${info.verificationUri}`);
+              console.error(`  Code:   ${info.userCode}\n`);
+            },
+          });
+          this.authMode = AuthMode.DeviceCode;
+        }
+        break;
+      }
     }
+
+    // Test the credential — this triggers the actual auth flow
+    const token = await this.credential.getToken(GRAPH_SCOPES);
+    if (!token) throw new Error("Failed to acquire token");
+    logger.info("Authentication successful");
   }
 
-  /** Returns an AuthenticationProvider compatible with the Graph SDK. */
   getGraphAuthProvider(): AuthenticationProvider {
-    return new MsalAuthProvider(this);
+    return new TokenCredentialAuthProvider(this.credential);
   }
 
   /** Check authentication status, token expiry, and scopes. */
   async getTokenStatus(): Promise<{
     isAuthenticated: boolean;
-    account?: string;
+    authMode: string;
     expiresOn?: Date;
     scopes?: string[];
   }> {
-    if (!this.account) return { isAuthenticated: false };
     try {
-      const { accessToken, expiresOn } = await this.acquireToken();
-      return {
-        isAuthenticated: true,
-        account: this.account.username,
-        expiresOn: expiresOn ?? undefined,
-        scopes: parseJwtScopes(accessToken),
-      };
+      const token = await this.credential.getToken(GRAPH_SCOPES);
+      if (token) {
+        return {
+          isAuthenticated: true,
+          authMode: this.authMode,
+          expiresOn: new Date(token.expiresOnTimestamp),
+          scopes: parseJwtScopes(token.token),
+        };
+      }
     } catch (error) {
       logger.error("Error getting token status", error);
-      return { isAuthenticated: false };
     }
+    return { isAuthenticated: false, authMode: this.authMode };
   }
 }
