@@ -2,16 +2,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Client } from "@microsoft/microsoft-graph-client";
-import fetch from "isomorphic-fetch";
 import { logger } from "./logger.js";
 import { AuthManager, AuthConfig } from "./auth.js";
-import { registerGraphTools } from "./graph.js";
+import { registerEntraTools } from "./entra.js";
+import { registerDefenderTools } from "./defender.js";
 import { registerWeatherTools } from "./weather.js";
 
-// Global fetch polyfill required by the Microsoft Graph client
-(global as any).fetch = fetch;
-
 // ── Validate required env vars ───────────────────────────────────────
+
 const tenantId = process.env.TENANT_ID;
 const clientId = process.env.CLIENT_ID;
 
@@ -29,16 +27,15 @@ if (!tenantId || !clientId) {
   process.exit(1);
 }
 
-// ── Create auth manager (uses cached token — no browser) ─────────────
-const authConfig: AuthConfig = {
-  tenantId,
-  clientId,
-  redirectUri: process.env.REDIRECT_URI,
-};
+// ── Create auth manager (MSAL — uses cached token, no browser) ───────
 
+const authConfig: AuthConfig = { tenantId, clientId };
 const authManager = new AuthManager(authConfig);
 
-if (!authManager.hasAuthRecord()) {
+// AuthManager.initialize() is async because MSAL loads the cache via plugin
+await authManager.initialize();
+
+if (!authManager.hasAccount()) {
   console.error(
     "No cached login found. Run 'npm run login' in your terminal first,\n" +
     "then restart the MCP server.",
@@ -51,17 +48,41 @@ const graphClient = Client.initWithMiddleware({
 });
 
 // ── MCP server ───────────────────────────────────────────────────────
+
 const server = new McpServer({
   name: "EverydayMCP",
-  version: "1.0.0",
+  version: "2.0.0",
 });
 
-logger.info("Starting EverydayMCP server v1.0.0");
+logger.info("Starting EverydayMCP server v2.0.0");
 
-registerGraphTools(server, () => graphClient, () => authManager);
+// Register tool groups
+registerEntraTools(server, () => graphClient);
+registerDefenderTools(server, () => graphClient);
 registerWeatherTools(server);
 
-// Connect stdio transport immediately — no blocking auth
+// Auth status tool — registered here because it needs the auth manager
+server.tool(
+  "get-auth-status",
+  "Check the current MSAL authentication status, token expiration, " +
+  "and granted Microsoft Graph permission scopes.",
+  {},
+  async () => {
+    const tokenStatus = await authManager.getTokenStatus();
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          authMethod: "msal",
+          tokenStatus,
+          timestamp: new Date().toISOString(),
+        }, null, 2),
+      }],
+    };
+  },
+);
+
+// Connect stdio transport — no blocking auth
 const transport = new StdioServerTransport();
 server.connect(transport).catch((error) => {
   console.error("Fatal error:", error);

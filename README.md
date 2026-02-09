@@ -2,17 +2,18 @@
 
 An MCP (Model Context Protocol) server that provides read-only access to:
 
-- **Microsoft Entra ID** (Azure AD) — users, groups, service principals, conditional access, etc.
-- **Microsoft Defender** — security alerts, incidents, secure scores, threat intelligence
-- **Microsoft Intune** — managed devices, compliance policies, device configurations, apps
+- **Microsoft Entra ID** (Azure AD) — users, groups, service principals, conditional access, sign-in logs, audit logs
+- **Microsoft Defender XDR** — security alerts, incidents, secure scores, threat intelligence, and **Advanced Hunting (KQL)**
 - **Weather** — current conditions, forecasts, astronomy data via [weatherapi.com](https://www.weatherapi.com/)
+
+Authentication uses **MSAL** (`@azure/msal-node`) with a file-based token cache for silent token acquisition.
 
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) 18 or later
 - [Git](https://git-scm.com/)
 - A Microsoft Entra (Azure AD) tenant with an app registration (see step 1 below)
-- A [weatherapi.com](https://www.weatherapi.com/) API key (free tier available)
+- A [weatherapi.com](https://www.weatherapi.com/) API key (free tier available — only required for weather tools)
 
 ## Getting Started
 
@@ -25,22 +26,25 @@ The server authenticates to Microsoft Graph as **your user account** via MSAL in
 3. Fill in the registration form:
    - **Name**: `EverydayMCP` (or any name you prefer)
    - **Supported account types**: *Accounts in this organizational directory only* (single tenant)
-   - **Redirect URI**: Select **Single-page application (SPA)** and enter `http://localhost:3000`
+   - **Redirect URI**: Leave blank for now (configured in the next step)
 4. Click **Register**
 5. On the app's **Overview** page, copy these two values — you will need them later:
    - **Application (client) ID** → this is your `CLIENT_ID`
    - **Directory (tenant) ID** → this is your `TENANT_ID`
-6. Go to **API permissions** > **Add a permission** > **Microsoft Graph** > **Delegated permissions** and add the permissions you need:
+6. Go to **Authentication** > **Add a platform** > **Mobile and desktop applications**
+   - Check the `http://localhost` redirect URI
+   - Click **Configure**
+7. On the same **Authentication** page, scroll down to **Advanced settings** and set **Allow public client flows** to **Yes**, then **Save**
+8. Go to **API permissions** > **Add a permission** > **Microsoft Graph** > **Delegated permissions** and add the permissions you need:
 
    | Service | Permissions |
    |---|---|
-   | Entra ID | `User.Read`, `User.Read.All`, `Group.Read.All`, `Directory.Read.All`, `Policy.Read.All` |
-   | Defender | `SecurityEvents.Read.All`, `SecurityIncident.Read.All`, `ThreatHunting.Read.All` |
-   | Intune | `DeviceManagementManagedDevices.Read.All`, `DeviceManagementConfiguration.Read.All`, `DeviceManagementApps.Read.All` |
+   | Entra ID | `User.Read`, `User.Read.All`, `Group.Read.All`, `Directory.Read.All`, `Policy.Read.All`, `AuditLog.Read.All` |
+   | Defender XDR | `SecurityEvents.Read.All`, `SecurityIncident.Read.All`, `ThreatHunting.Read.All` |
 
    > **Tip**: Start with `User.Read` to verify auth works, then add more permissions as needed. If you add new permissions later, re-run `npm run login` to pick them up.
 
-7. If your organization requires it, click **Grant admin consent** for the permissions above
+9. If your organization requires it, click **Grant admin consent** for the permissions above
 
 ### 2. Clone the repository
 
@@ -65,7 +69,7 @@ This compiles the TypeScript source in `src/` to JavaScript in the `build/` dire
 
 ### 5. Log in (one-time)
 
-Before the MCP server can use Graph APIs, you must sign in once from your terminal. This opens a browser window, authenticates you, and caches the token locally so the MCP server can use it silently.
+Before the MCP server can use Graph APIs, you must sign in once from your terminal. This opens a browser window via MSAL, authenticates you, and caches the tokens locally so the MCP server can use them silently.
 
 **Windows (PowerShell):**
 
@@ -79,7 +83,7 @@ $env:TENANT_ID="your-tenant-id"; $env:CLIENT_ID="your-client-id"; npm run login
 TENANT_ID="your-tenant-id" CLIENT_ID="your-client-id" npm run login
 ```
 
-A browser window will open for Microsoft sign-in. After you authenticate, the token is cached to `~/.everydaymcp/auth-record.json` and the OS credential store. You only need to do this once (or again if your token expires or you change permissions).
+A browser window will open for Microsoft sign-in. After you authenticate, the MSAL token cache is saved to `~/.everydaymcp/msal-cache.json`. You only need to do this once (or again if your token expires or you change permissions).
 
 ### 6. Configure your MCP client
 
@@ -91,22 +95,21 @@ See the [MCP Client Configuration](#mcp-client-configuration) section below.
 
 | Variable | Required | Description |
 |---|---|---|
-| `TENANT_ID` | **Yes** | Your Entra directory (tenant) ID — from step 1.5 above |
-| `CLIENT_ID` | **Yes** | Your Entra app registration (client) ID — from step 1.5 above |
-| `REDIRECT_URI` | No | OAuth redirect URI (defaults to `http://localhost:3000`) |
+| `TENANT_ID` | **Yes** | Your Entra directory (tenant) ID |
+| `CLIENT_ID` | **Yes** | Your Entra app registration (client) ID |
 | `WEATHER_API_KEY` | Yes* | weatherapi.com API key (*only required for weather tools) |
 | `USE_GRAPH_BETA` | No | Set to `false` to use Graph v1.0 instead of beta |
 
 ### Authentication
 
-The server uses a **two-step authentication** approach:
+The server uses **MSAL** (`@azure/msal-node`) with a two-step approach:
 
-1. **`npm run login`** — Run once in your terminal. Opens a browser for interactive Microsoft sign-in, then caches the token to disk and the OS credential store.
-2. **MCP server** — On startup, loads the cached credential and acquires tokens **silently** (no browser, no prompts). The server never opens a browser or asks for a device code.
+1. **`npm run login`** — Run once in your terminal. Opens a browser via `acquireTokenInteractive`, authenticates you, and persists the MSAL token cache to disk.
+2. **MCP server** — On startup, loads the cached MSAL token cache and calls `acquireTokenSilent` to get tokens. No browser, no prompts.
 
 Your user account's permissions determine what Graph data is accessible. The server will exit with an error at startup if `TENANT_ID` or `CLIENT_ID` are not set.
 
-> **Re-authentication**: If your cached token expires or you add new permissions to the app registration, simply re-run `npm run login`.
+> **Re-authentication**: If your cached token expires or you add new permissions to the app registration, re-run `npm run login`.
 
 ## MCP Client Configuration
 
@@ -153,20 +156,22 @@ Add the following to your `claude_desktop_config.json`:
 }
 ```
 
-> **Important:** The path must point to `build/main.js` (not `main.js`). Use forward slashes in the path even on Windows — Node.js handles them correctly.
-
-Replace the `TENANT_ID` and `CLIENT_ID` values with the IDs you copied from your Entra app registration in step 1.
+> **Important:** The path must point to `build/main.js` (not `main.js`). Use forward slashes in the path even on Windows.
 
 ## Available Tools
 
-### Graph API (Entra, Defender, Intune)
+### Entra ID
 
 | Tool | Description |
 |---|---|
-| `entra-query` | Query Entra ID — users, groups, apps, roles, conditional access |
+| `entra-query` | Query Entra ID — users, groups, apps, roles, conditional access, sign-in logs, audit logs |
+
+### Defender XDR
+
+| Tool | Description |
+|---|---|
 | `defender-query` | Query Defender — alerts, incidents, secure scores, threat intel |
-| `intune-query` | Query Intune — managed devices, compliance, configs, apps |
-| `get-auth-status` | Check auth status, token expiry, and granted scopes |
+| `defender-advanced-hunting` | Run KQL queries via Defender XDR Advanced Hunting |
 
 ### Weather
 
@@ -177,6 +182,12 @@ Replace the `TENANT_ID` and `CLIENT_ID` values with the IDs you copied from your
 | `weather-search` | Search / autocomplete locations |
 | `weather-astronomy` | Sunrise, sunset, moon phase data |
 
+### Utility
+
+| Tool | Description |
+|---|---|
+| `get-auth-status` | Check MSAL auth status, token expiry, and granted scopes |
+
 ## Troubleshooting
 
 ### "No cached login found" error
@@ -186,10 +197,13 @@ Run `npm run login` in your terminal first, then restart the MCP server.
 Re-run `npm run login` to refresh the cached token.
 
 ### Permission denied errors from Graph API
-Add the required permissions to your app registration in Entra (step 1.6), grant admin consent if needed, then re-run `npm run login`.
+Add the required permissions to your app registration in Entra (step 1.8), grant admin consent if needed, then re-run `npm run login`.
+
+### Upgrading from v1
+v2 replaces `@azure/identity` with MSAL (`@azure/msal-node`). After upgrading, re-run `npm run login` to create a new MSAL token cache.
 
 ### Server log location
-The server writes logs to `build/mcp-server.log` in the project directory.
+The server writes logs to `~/.everydaymcp/server.log`.
 
 ## Example Queries
 
@@ -197,11 +211,17 @@ The server writes logs to `build/mcp-server.log` in the project directory.
 # Entra: list all users
 entra-query { path: "/users" }
 
+# Entra: sign-in logs from the last 24 hours
+entra-query { path: "/auditLogs/signIns", queryParams: { "$top": "50", "$orderby": "createdDateTime desc" } }
+
 # Defender: high severity alerts
 defender-query { path: "/security/alerts_v2", queryParams: { "$filter": "severity eq 'high'" } }
 
-# Intune: all managed devices
-intune-query { path: "/deviceManagement/managedDevices", fetchAll: true }
+# Defender: advanced hunting with KQL
+defender-advanced-hunting { query: "DeviceProcessEvents | where Timestamp > ago(1d) | take 10" }
+
+# Defender: failed sign-ins via KQL
+defender-advanced-hunting { query: "IdentityLogonEvents | where ActionType == 'LogonFailed' | summarize count() by AccountName | top 10 by count_" }
 
 # Weather: current conditions
 weather-current { location: "Seattle" }

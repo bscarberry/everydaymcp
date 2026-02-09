@@ -1,37 +1,31 @@
 #!/usr/bin/env node
 //
 // One-time interactive login. Run this in your terminal BEFORE using
-// the MCP server.  It opens a browser for Microsoft sign-in, then
-// caches the token and saves an authentication record to disk so the
-// MCP server can silently acquire tokens without a browser.
+// the MCP server.  It opens a browser for Microsoft sign-in via MSAL,
+// then caches the tokens to disk so the MCP server can silently acquire
+// tokens without a browser.
 //
 // Usage:  npm run login
 //         npm run login -- --tenant <id> --client <id>
 //
 
-import { InteractiveBrowserCredential, useIdentityPlugin } from "@azure/identity";
-import { cachePersistencePlugin } from "@azure/identity-cache-persistence";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
-import { DefaultRedirectUri } from "./constants.js";
-import { AUTH_RECORD_PATH, AUTH_DIR } from "./auth.js";
+import { PublicClientApplication, Configuration } from "@azure/msal-node";
+import { exec } from "child_process";
+import { createCachePlugin, CACHE_PATH } from "./auth.js";
+import { GRAPH_SCOPES } from "./constants.js";
 
-// Enable persistent token cache (OS keychain / encrypted file)
-useIdentityPlugin(cachePersistencePlugin);
+// ── CLI argument parsing ─────────────────────────────────────────────
 
-function parseArgs(): { tenantId: string; clientId: string; redirectUri: string } {
+function parseArgs(): { tenantId: string; clientId: string } {
   const args = process.argv.slice(2);
   let tenantId = process.env.TENANT_ID || "";
   let clientId = process.env.CLIENT_ID || "";
-  let redirectUri = process.env.REDIRECT_URI || DefaultRedirectUri;
 
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === "--tenant" || args[i] === "-t") && args[i + 1]) {
       tenantId = args[++i];
     } else if ((args[i] === "--client" || args[i] === "-c") && args[i + 1]) {
       clientId = args[++i];
-    } else if ((args[i] === "--redirect" || args[i] === "-r") && args[i + 1]) {
-      redirectUri = args[++i];
     }
   }
 
@@ -43,43 +37,64 @@ function parseArgs(): { tenantId: string; clientId: string; redirectUri: string 
     process.exit(1);
   }
 
-  return { tenantId, clientId, redirectUri };
+  return { tenantId, clientId };
 }
 
+// ── Browser launcher ─────────────────────────────────────────────────
+
+function openSystemBrowser(url: string): Promise<void> {
+  return new Promise((resolve) => {
+    const cmd =
+      process.platform === "win32"
+        ? `start "" "${url}"`
+        : process.platform === "darwin"
+          ? `open "${url}"`
+          : `xdg-open "${url}"`;
+
+    console.log(
+      `\nIf the browser doesn't open automatically, navigate to:\n${url}\n`,
+    );
+    exec(cmd, () => resolve());
+  });
+}
+
+// ── Main ─────────────────────────────────────────────────────────────
+
 async function main() {
-  const { tenantId, clientId, redirectUri } = parseArgs();
+  const { tenantId, clientId } = parseArgs();
 
-  console.log("Signing in to Microsoft Graph...");
-  console.log(`  Tenant:   ${tenantId}`);
-  console.log(`  Client:   ${clientId}`);
-  console.log(`  Redirect: ${redirectUri}\n`);
+  console.log("Signing in to Microsoft Graph via MSAL...");
+  console.log(`  Tenant: ${tenantId}`);
+  console.log(`  Client: ${clientId}`);
 
-  const credential = new InteractiveBrowserCredential({
-    tenantId,
-    clientId,
-    redirectUri,
-    tokenCachePersistenceOptions: { enabled: true, name: "everydaymcp" },
+  const msalConfig: Configuration = {
+    auth: {
+      clientId,
+      authority: `https://login.microsoftonline.com/${tenantId}`,
+    },
+    cache: {
+      cachePlugin: createCachePlugin(),
+    },
+  };
+
+  const pca = new PublicClientApplication(msalConfig);
+
+  const result = await pca.acquireTokenInteractive({
+    scopes: GRAPH_SCOPES,
+    openBrowser: openSystemBrowser,
+    successTemplate:
+      "<h1>Authentication successful!</h1>" +
+      "<p>You can close this window and return to your terminal.</p>",
+    errorTemplate:
+      "<h1>Authentication failed</h1><p>Error: {{error}}</p>",
   });
 
-  // Acquire token — this opens the browser
-  const token = await credential.getToken("https://graph.microsoft.com/.default");
-  if (!token) {
-    console.error("Failed to acquire token.");
-    process.exit(1);
-  }
-
-  // Save the authentication record so the MCP server can re-hydrate silently
-  const record = await credential.authenticate("https://graph.microsoft.com/.default");
-  if (record) {
-    if (!existsSync(AUTH_DIR)) {
-      mkdirSync(AUTH_DIR, { recursive: true });
-    }
-    writeFileSync(AUTH_RECORD_PATH, JSON.stringify(record), "utf-8");
-    console.log(`\nAuthentication record saved to: ${AUTH_RECORD_PATH}`);
-  }
-
-  console.log("\nLogin successful! You can now start the MCP server.");
-  console.log("The cached token will be used automatically — no browser needed.\n");
+  console.log(`\nLogin successful!`);
+  console.log(`  Account: ${result.account?.username}`);
+  console.log(`  Token cache saved to: ${CACHE_PATH}`);
+  console.log(
+    `\nYou can now start the MCP server. Tokens will refresh automatically.\n`,
+  );
 }
 
 main().catch((err) => {

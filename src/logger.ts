@@ -1,11 +1,17 @@
-import { appendFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 
-const LOG_FILE = join(import.meta.dirname, "mcp-server.log");
+const LOG_DIR = join(homedir(), ".everydaymcp");
+const LOG_FILE = join(LOG_DIR, "server.log");
+
+if (!existsSync(LOG_DIR)) {
+  mkdirSync(LOG_DIR, { recursive: true });
+}
 
 function formatMessage(level: string, message: string, data?: unknown): string {
   const timestamp = new Date().toISOString();
-  const dataStr = data ? `\n${JSON.stringify(data, null, 2)}` : "";
+  const dataStr = data ? ` ${JSON.stringify(data)}` : "";
   return `[${timestamp}] [${level}] ${message}${dataStr}\n`;
 }
 
