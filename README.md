@@ -69,7 +69,7 @@ This compiles the TypeScript source in `src/` to JavaScript in the `build/` dire
 
 ### 5. Log in (one-time)
 
-Before the MCP server can use Graph APIs, you must sign in once from your terminal. This opens a browser window via MSAL, authenticates you, and caches the tokens locally so the MCP server can use them silently.
+Before the MCP server can use Graph APIs, you must sign in once from your terminal. This step runs **outside** of your MCP client, so you need to pass `TENANT_ID` and `CLIENT_ID` directly as shell environment variables (or CLI flags).
 
 **Windows (PowerShell):**
 
@@ -85,13 +85,19 @@ TENANT_ID="your-tenant-id" CLIENT_ID="your-client-id" npm run login
 
 A browser window will open for Microsoft sign-in. After you authenticate, the MSAL token cache is saved to `~/.everydaymcp/msal-cache.json`. You only need to do this once (or again if your token expires or you change permissions).
 
+> **Note:** These env vars are only needed for the login command. When running the MCP server, your MCP client provides them automatically via its own configuration (see step 6).
+
 ### 6. Configure your MCP client
 
-See the [MCP Client Configuration](#mcp-client-configuration) section below.
+Add your `TENANT_ID`, `CLIENT_ID`, and `WEATHER_API_KEY` to your MCP client configuration. The MCP client injects these as environment variables into the server process automatically — you do **not** need to set them in your shell or system environment.
+
+See the [MCP Client Configuration](#mcp-client-configuration) section below for examples.
 
 ## Configuration
 
 ### Environment variables
+
+These variables are set in your **MCP client configuration** (e.g. the `env` block in `claude_desktop_config.json`). The MCP client passes them to the server process automatically — you do not need to export them in your shell.
 
 | Variable | Required | Description |
 |---|---|---|
@@ -100,12 +106,14 @@ See the [MCP Client Configuration](#mcp-client-configuration) section below.
 | `WEATHER_API_KEY` | Yes* | weatherapi.com API key (*only required for weather tools) |
 | `USE_GRAPH_BETA` | No | Set to `false` to use Graph v1.0 instead of beta |
 
+> **Login only:** When running `npm run login` from your terminal (step 5), you must pass `TENANT_ID` and `CLIENT_ID` as shell env vars or CLI flags, since the login command runs outside of the MCP client.
+
 ### Authentication
 
 The server uses **MSAL** (`@azure/msal-node`) with a two-step approach:
 
-1. **`npm run login`** — Run once in your terminal. Opens a browser via `acquireTokenInteractive`, authenticates you, and persists the MSAL token cache to disk.
-2. **MCP server** — On startup, loads the cached MSAL token cache and calls `acquireTokenSilent` to get tokens. No browser, no prompts.
+1. **`npm run login`** — Run once in your terminal. Opens a browser via `acquireTokenInteractive`, authenticates you, and persists the MSAL token cache to disk. Requires `TENANT_ID` and `CLIENT_ID` passed as shell env vars or CLI flags.
+2. **MCP server** — On startup, receives `TENANT_ID` and `CLIENT_ID` from the MCP client config, loads the cached MSAL token cache, and calls `acquireTokenSilent` to get tokens. No browser, no prompts.
 
 Your user account's permissions determine what Graph data is accessible. The server will exit with an error at startup if `TENANT_ID` or `CLIENT_ID` are not set.
 
