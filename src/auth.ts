@@ -47,6 +47,7 @@ export class TokenCredentialAuthProvider implements AuthenticationProvider {
   }
 
   async getAccessToken(): Promise<string> {
+    await this.authManager.ensureAuthenticated();
     const credential = this.authManager.getCredential();
     const token = await credential.getToken("https://graph.microsoft.com/.default");
     if (!token) throw new Error("Failed to acquire access token");
@@ -83,8 +84,8 @@ export class AuthManager {
     }
 
     if (!authRecord) {
-      logger.error(
-        "No authentication record found. Run 'npm run login' to sign in first.",
+      logger.info(
+        "No authentication record found. Will attempt interactive sign-in on first tool call.",
       );
     }
 
@@ -167,6 +168,9 @@ export class AuthManager {
     expiresOn?: Date;
     scopes?: string[];
   }> {
+    if (!this.isReady) {
+      await this.ensureAuthenticated();
+    }
     if (!this.isReady) return { isAuthenticated: false };
     try {
       const token = await this.credential.getToken(

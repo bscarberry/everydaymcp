@@ -38,12 +38,8 @@ const authConfig: AuthConfig = {
 
 const authManager = new AuthManager(authConfig);
 
-// If no cached login exists, attempt interactive browser sign-in
-// before starting the MCP server so the user can authenticate
-// directly when Claude Desktop launches the server.
-await authManager.ensureAuthenticated();
-
-// Graph client — token acquisition is silent via the cached credential
+// Graph client — token acquisition triggers interactive browser sign-in
+// on first use if no cached auth record exists.
 const graphClient = Client.initWithMiddleware({
   authProvider: authManager.getGraphAuthProvider(),
 });
@@ -59,7 +55,7 @@ logger.info("Starting EverydayMCP server v1.0.0");
 registerGraphTools(server, () => graphClient, () => authManager);
 registerWeatherTools(server);
 
-// Connect stdio transport
+// Connect stdio transport immediately — auth happens lazily on first tool call
 const transport = new StdioServerTransport();
 server.connect(transport).catch((error) => {
   console.error("Fatal error:", error);
