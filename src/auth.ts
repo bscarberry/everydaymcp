@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import {
@@ -47,6 +47,7 @@ export class TokenCredentialAuthProvider implements AuthenticationProvider {
   }
 
   async getAccessToken(): Promise<string> {
+    await this.authManager.ensureAuthenticated();
     const credential = this.authManager.getCredential();
     const token = await credential.getToken("https://graph.microsoft.com/.default");
     if (!token) throw new Error("Failed to acquire access token");
@@ -83,8 +84,8 @@ export class AuthManager {
     }
 
     if (!authRecord) {
-      logger.error(
-        "No authentication record found. Run 'npm run login' to sign in first.",
+      logger.info(
+        "No authentication record found. Will attempt interactive sign-in on first tool call.",
       );
     }
 
@@ -99,6 +100,49 @@ export class AuthManager {
       tokenCachePersistenceOptions: { enabled: true, name: "everydaymcp" },
       ...(authRecord ? { authenticationRecord: authRecord } : {}),
     });
+  }
+
+  /**
+   * Attempt interactive browser login if no cached auth record exists.
+   * Opens the user's browser for Microsoft sign-in, then saves the
+   * authentication record so subsequent startups are silent.
+   */
+  async ensureAuthenticated(): Promise<void> {
+    if (this.isReady) return;
+
+    logger.info("No cached login found — starting interactive browser sign-in");
+    console.error("No cached login found. Opening browser for sign-in...");
+
+    try {
+      const token = await this.credential.getToken(
+        "https://graph.microsoft.com/.default",
+      );
+      if (!token) {
+        throw new Error("Failed to acquire token from interactive sign-in");
+      }
+
+      const record = await this.credential.authenticate(
+        "https://graph.microsoft.com/.default",
+      );
+      if (record) {
+        if (!existsSync(AUTH_DIR)) {
+          mkdirSync(AUTH_DIR, { recursive: true });
+        }
+        writeFileSync(AUTH_RECORD_PATH, JSON.stringify(record), "utf-8");
+        logger.info(`Authentication record saved to ${AUTH_RECORD_PATH}`);
+        console.error("Login successful! Authentication record saved.");
+      }
+
+      this.isReady = true;
+      logger.info("Interactive sign-in completed successfully");
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      logger.error("Interactive sign-in failed", err);
+      console.error(
+        `Interactive sign-in failed: ${msg}\n` +
+        "You can also run 'npm run login' in your terminal, then restart the MCP server.",
+      );
+    }
   }
 
   getCredential(): InteractiveBrowserCredential {
@@ -124,6 +168,9 @@ export class AuthManager {
     expiresOn?: Date;
     scopes?: string[];
   }> {
+    if (!this.isReady) {
+      await this.ensureAuthenticated();
+    }
     if (!this.isReady) return { isAuthenticated: false };
     try {
       const token = await this.credential.getToken(

@@ -38,14 +38,8 @@ const authConfig: AuthConfig = {
 
 const authManager = new AuthManager(authConfig);
 
-if (!authManager.hasAuthRecord()) {
-  console.error(
-    "No cached login found. Run 'npm run login' in your terminal first,\n" +
-    "then restart the MCP server.",
-  );
-}
-
-// Graph client — token acquisition is silent via the cached credential
+// Graph client — token acquisition triggers interactive browser sign-in
+// on first use if no cached auth record exists.
 const graphClient = Client.initWithMiddleware({
   authProvider: authManager.getGraphAuthProvider(),
 });
@@ -61,7 +55,7 @@ logger.info("Starting EverydayMCP server v1.0.0");
 registerGraphTools(server, () => graphClient, () => authManager);
 registerWeatherTools(server);
 
-// Connect stdio transport immediately — no blocking auth
+// Connect stdio transport immediately — auth happens lazily on first tool call
 const transport = new StdioServerTransport();
 server.connect(transport).catch((error) => {
   console.error("Fatal error:", error);
