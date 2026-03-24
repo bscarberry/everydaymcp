@@ -3,8 +3,8 @@
   "configurationProfile": "mcp-custom-handler",
   "customHandler": {
     "description": {
-      "defaultExecutablePath": "npm",
-      "arguments": ["run", "start"]
+      "defaultExecutablePath": "python",
+      "arguments": ["main.py"]
     },
     "http": {
       "DefaultAuthorizationLevel": "anonymous"
