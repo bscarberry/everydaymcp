@@ -1,23 +1,7 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-import {
-  InteractiveBrowserCredential,
-  AuthenticationRecord,
-  useIdentityPlugin,
-} from "@azure/identity";
-import { cachePersistencePlugin } from "@azure/identity-cache-persistence";
+import { DefaultAzureCredential } from "@azure/identity";
 import { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import jwt from "jsonwebtoken";
 import { logger } from "./logger.js";
-import { DefaultRedirectUri } from "./constants.js";
-
-// Enable persistent token cache (OS keychain / encrypted file)
-useIdentityPlugin(cachePersistencePlugin);
-
-// Where the login CLI saves the authentication record
-export const AUTH_DIR = join(homedir(), ".everydaymcp");
-export const AUTH_RECORD_PATH = join(AUTH_DIR, "auth-record.json");
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -40,16 +24,14 @@ function parseJwtScopes(token: string): string[] {
 // ── Auth provider for the Graph SDK ──────────────────────────────────
 
 export class TokenCredentialAuthProvider implements AuthenticationProvider {
-  private authManager: AuthManager;
+  private credential: DefaultAzureCredential;
 
-  constructor(authManager: AuthManager) {
-    this.authManager = authManager;
+  constructor(credential: DefaultAzureCredential) {
+    this.credential = credential;
   }
 
   async getAccessToken(): Promise<string> {
-    await this.authManager.ensureAuthenticated();
-    const credential = this.authManager.getCredential();
-    const token = await credential.getToken("https://graph.microsoft.com/.default");
+    const token = await this.credential.getToken("https://graph.microsoft.com/.default");
     if (!token) throw new Error("Failed to acquire access token");
     return token.token;
   }
@@ -59,108 +41,21 @@ export class TokenCredentialAuthProvider implements AuthenticationProvider {
 
 export interface AuthConfig {
   tenantId: string;
-  clientId: string;
-  redirectUri?: string;
 }
 
 export class AuthManager {
-  private credential: InteractiveBrowserCredential;
-  private config: AuthConfig;
-  private isReady: boolean;
+  private credential: DefaultAzureCredential;
 
   constructor(config: AuthConfig) {
-    this.config = config;
-
-    // Try to load the saved authentication record from disk
-    let authRecord: AuthenticationRecord | undefined;
-    if (existsSync(AUTH_RECORD_PATH)) {
-      try {
-        const raw = readFileSync(AUTH_RECORD_PATH, "utf-8");
-        authRecord = JSON.parse(raw) as AuthenticationRecord;
-        logger.info("Loaded cached authentication record");
-      } catch (err) {
-        logger.error("Failed to read auth record, will require fresh login", err);
-      }
-    }
-
-    if (!authRecord) {
-      logger.info(
-        "No authentication record found. Will attempt interactive sign-in on first tool call.",
-      );
-    }
-
-    this.isReady = !!authRecord;
-
-    // Create credential with the cached record + persistent token cache.
-    // With both in place, token acquisition is silent (no browser).
-    this.credential = new InteractiveBrowserCredential({
-      tenantId: config.tenantId,
-      clientId: config.clientId,
-      redirectUri: config.redirectUri || DefaultRedirectUri,
-      tokenCachePersistenceOptions: { enabled: true, name: "everydaymcp" },
-      ...(authRecord ? { authenticationRecord: authRecord } : {}),
-    });
-  }
-
-  /**
-   * Attempt interactive browser login if no cached auth record exists.
-   * Opens the user's browser for Microsoft sign-in, then saves the
-   * authentication record so subsequent startups are silent.
-   */
-  async ensureAuthenticated(): Promise<void> {
-    if (this.isReady) return;
-
-    logger.info("No cached login found — starting interactive browser sign-in");
-    console.error("No cached login found. Opening browser for sign-in...");
-
-    try {
-      const token = await this.credential.getToken(
-        "https://graph.microsoft.com/.default",
-      );
-      if (!token) {
-        throw new Error("Failed to acquire token from interactive sign-in");
-      }
-
-      const record = await this.credential.authenticate(
-        "https://graph.microsoft.com/.default",
-      );
-      if (record) {
-        if (!existsSync(AUTH_DIR)) {
-          mkdirSync(AUTH_DIR, { recursive: true });
-        }
-        writeFileSync(AUTH_RECORD_PATH, JSON.stringify(record), "utf-8");
-        logger.info(`Authentication record saved to ${AUTH_RECORD_PATH}`);
-        console.error("Login successful! Authentication record saved.");
-      }
-
-      this.isReady = true;
-      logger.info("Interactive sign-in completed successfully");
-    } catch (err: any) {
-      const msg = err?.message || String(err);
-      logger.error("Interactive sign-in failed", err);
-      console.error(
-        `Interactive sign-in failed: ${msg}\n` +
-        "You can also run 'npm run login' in your terminal, then restart the MCP server.",
-      );
-    }
-  }
-
-  getCredential(): InteractiveBrowserCredential {
-    if (!this.isReady) {
-      throw new Error(
-        "Not authenticated. Run 'npm run login' in your terminal first, " +
-        "then restart the MCP server.",
-      );
-    }
-    return this.credential;
+    // DefaultAzureCredential automatically uses:
+    //   - Managed Identity when running in Azure Functions
+    //   - Azure CLI / VS Code / environment credentials locally
+    this.credential = new DefaultAzureCredential({ tenantId: config.tenantId });
+    logger.info("AuthManager initialized with DefaultAzureCredential");
   }
 
   getGraphAuthProvider(): TokenCredentialAuthProvider {
-    return new TokenCredentialAuthProvider(this);
-  }
-
-  hasAuthRecord(): boolean {
-    return this.isReady;
+    return new TokenCredentialAuthProvider(this.credential);
   }
 
   async getTokenStatus(): Promise<{
@@ -168,10 +63,6 @@ export class AuthManager {
     expiresOn?: Date;
     scopes?: string[];
   }> {
-    if (!this.isReady) {
-      await this.ensureAuthenticated();
-    }
-    if (!this.isReady) return { isAuthenticated: false };
     try {
       const token = await this.credential.getToken(
         "https://graph.microsoft.com/.default",
